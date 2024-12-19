@@ -22,7 +22,7 @@ from .fracture_modes import fracture_modes
 
 def generate_fractures(input_dir,num_modes=20,num_impacts=80,output_dir=None,verbose=True,compressed=True,cage_size=4000,volume_constraint=(1/50)):
     """Randomly generate different fractures of a given object and write them to an output directory.
-    
+
     Parameters
     ----------
     input_dir : str
@@ -73,7 +73,7 @@ def generate_fractures(input_dir,num_modes=20,num_impacts=80,output_dir=None,ver
 
     # Initialize fracture mode class
     t30 = time.time()
-    modes = fracture_modes(nodes,elements) 
+    modes = fracture_modes(nodes,elements)
     # Set parameters for call to fracture modes
     params = fracture_modes_parameters(num_modes=num_modes,verbose=False,d=1)
     # Compute fracture modes. This should be the bottleneck:
@@ -84,8 +84,8 @@ def generate_fractures(input_dir,num_modes=20,num_impacts=80,output_dir=None,ver
     if not os.path.exists(output_dir):
         os.mkdir(output_dir)
 
-    
-    
+
+
     if compressed:
         modes.write_generic_data_compressed(output_dir)
         modes.write_segmented_modes_compressed(output_dir)
@@ -148,3 +148,130 @@ def generate_fractures(input_dir,num_modes=20,num_impacts=80,output_dir=None,ver
     # except:
     #     if verbose:
     #         print("Error encountered.")
+
+# from concurrent.futures import ThreadPoolExecutor
+# import numpy as np
+# import os
+# import igl
+# import tetgen
+# from scipy.sparse import csr_matrix
+# from .fracture_modes_parameters import fracture_modes_parameters
+# from .fracture_modes import fracture_modes
+# import cupy as cp
+# import cupyx.scipy.sparse as cp_sparse
+#
+# from gpytoolbox.copyleft import lazy_cage
+# # Import other necessary modules (placeholders for now)
+# # from .fracture_modes import fracture_modes
+# # from .fracture_modes_parameters import fracture_modes_parameters
+#
+#
+# def process_single_impact(index, contact_point, sigma, modes, volume_constraint, total_vol, stream=None):
+#     """
+#     单次断裂生成任务 (使用 GPU 和 CUDA 流)
+#     """
+#     try:
+#         # 使用指定 CUDA 流
+#         if stream is None:
+#             stream = cp.cuda.Stream(non_blocking=True)
+#
+#         with stream:
+#             # 切换到 GPU 上的矩阵和向量操作
+#             contact_point_gpu = cp.asarray(contact_point)
+#             sigma_gpu = cp.asarray(sigma)
+#
+#             # 使用 GPU 进行 impact_projection
+#             modes.impact_projection(contact_point=contact_point_gpu, direction=cp.array([1.0]), threshold=sigma_gpu, num_modes_used=20)
+#
+#             # 验证体积约束是否满足
+#             min_volume = volume_constraint * total_vol / modes.n_pieces_after_impact
+#             current_min_volume = total_vol
+#             for i in range(modes.n_pieces_after_impact):
+#                 current_min_volume = min(
+#                     current_min_volume,
+#                     cp.sum(modes.volumes[modes.tet_labels_after_impact == i])  # GPU 加速
+#                 )
+#             valid_volume = current_min_volume >= min_volume
+#
+#             # 如果断裂有效且满足体积约束
+#             if valid_volume and modes.n_pieces_after_impact > 1:
+#                 return modes.piece_labels_after_impact, modes.n_pieces_after_impact
+#             else:
+#                 return None
+#
+#     except Exception as e:
+#         print(f"Error in task {index}: {e}")
+#         return None
+#     finally:
+#         # 确保同步流
+#         if stream is not None:
+#             stream.synchronize()
+#
+# def generate_fractures(input_dir, num_modes=20, num_impacts=80, output_dir=None, verbose=True, compressed=True,
+#                        cage_size=4000, volume_constraint=(1 / 50), num_threads=16):
+#     """
+#     使用 GPU 和 CUDA 流优化的断裂生成
+#     """
+#     np.random.seed(0)
+#     v_fine, f_fine = igl.read_triangle_mesh(input_dir)
+#     v_fine = cp.asarray(v_fine)  # 转换到 GPU
+#     f_fine = cp.asarray(f_fine)
+#
+#     # 调用 lazy_cage 前，将数据从 CuPy 转为 NumPy
+#     v_fine_numpy = v_fine.get()
+#     f_fine_numpy = f_fine.get()
+#
+#     # 调用 lazy_cage（需要 NumPy 数据）
+#     v, f = lazy_cage(v_fine_numpy, f_fine_numpy, num_faces=cage_size)
+#
+#     # 确保输入 `tetgen.TetGen` 时为 NumPy 数组
+#     v = np.asarray(v)  # 将 CuPy 或其他可能的格式转换为 NumPy 数组
+#     f = np.asarray(f)
+#
+#     # 四面体化
+#     tgen = tetgen.TetGen(v, f)
+#     nodes, elements = tgen.tetrahedralize(minratio=1.5)
+#     nodes = cp.asarray(nodes)  # 转换到 GPU
+#     elements = cp.asarray(elements)
+#
+#     # 初始化 fracture_modes 对象
+#     modes = fracture_modes(nodes, elements)
+#     params = fracture_modes_parameters(num_modes=num_modes, verbose=False, d=1)
+#     modes.compute_modes(parameters=params)
+#     modes.impact_precomputation(v_fine=v_fine, f_fine=f_fine)
+#
+#     # 随机生成冲击点
+#     B, FI = igl.random_points_on_mesh(1000 * num_impacts, v, f)
+#     P = B[:, 0:3] * v[f[FI, 0], :] + B[:, 3:6] * v[f[FI, 1], :] + B[:, 6:9] * v[f[FI, 2], :]
+#     sigmas = cp.random.rand(1000 * num_impacts) * 1000  # GPU 上生成随机数
+#
+#     # 初始化结果存储
+#     results = []
+#     total_vol = cp.sum(igl.volume(modes.vertices, modes.elements))  # GPU 化体积计算
+#
+#     # 并行化执行，每个线程分配一个 CUDA 流
+#     streams = [cp.cuda.Stream(non_blocking=True) for _ in range(num_threads)]
+#     with ThreadPoolExecutor(max_workers=num_threads) as executor:
+#         futures = [
+#             executor.submit(process_single_impact, i, P[i], sigmas[i], modes, volume_constraint, total_vol, streams[i % num_threads])
+#             for i in range(len(P))
+#         ]
+#
+#         for future in futures:
+#             result = future.result()
+#             if result is not None:
+#                 results.append(result)
+#
+#     # 输出结果
+#     if not os.path.exists(output_dir):
+#         os.makedirs(output_dir, exist_ok=True)
+#
+#     for idx, (labels, n_pieces) in enumerate(results):
+#         fracture_dir = os.path.join(output_dir, f"fracture_{idx}")
+#         os.makedirs(fracture_dir, exist_ok=True)
+#
+#         # 保存断裂模式
+#         modes.write_segmented_output_compressed(fracture_dir)
+#
+#     if verbose:
+#         print(f"Generated {len(results)} fractures and saved to {output_dir}.")

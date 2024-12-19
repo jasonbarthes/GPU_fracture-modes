@@ -75,7 +75,8 @@ def callback():
 
     if(psim.Button("Compute modes")):
         tgen = tetgen.TetGen(v,f)
-        nodes, elements =  tgen.tetrahedralize(minratio=1.4)
+        #raised the minratio, so that the number of tetrahedra does not explode
+        nodes, elements =  tgen.tetrahedralize(minratio=2.0)
         modes_text = "Computing modes..."
         modes = fracture.fracture_modes(nodes,elements)
         modes.compute_modes(params)
@@ -146,7 +147,7 @@ def callback():
 
     changed, face_num = psim.InputInt("Faces in cage", face_num)
     if changed:
-        v, f = lazy_cage(v_fine,f_fine,num_faces=face_num,grid_size = gs)
+        v, f = lazy_cage(v_fine,f_fine,num_faces=face_num,max_iter = 20, grid_size = gs)
         ps_cage = ps.register_surface_mesh("cage mesh", v, f)
         ps_cage.set_transparency(0.4)
 

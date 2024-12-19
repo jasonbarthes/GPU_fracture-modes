@@ -1,134 +1,71 @@
-# Breaking Good: Fracture Modes for Realtime Destruction
+## Credits
+This project is based on [Breaking Good: Fracture Modes for Realtime Destruction](https://github.com/sgsellan/fracture-modes) by [Silvia Sellán].
 
-This is the code accompanying the *Transactions on Graphics* paper ["Breaking Good: Fracture Modes for Realtime Destruction"](https://www.silviasellan.com/pdf/papers/fracture-harmonics.pdf), by Silvia Sellán, Jack Luong, Leticia Mattos Da Silva,
-Aravind Ramakrishnan, Yuchuan Yang and Alec Jacobson and the *NeurIPS Datasets & Benchmarks 2022* paper ["Breaking Bad: A Dataset for Geometric Fracture and Reassembly"](https://breaking-bad-dataset.github.io) by Silvia Sellán, Yun-Chun Chen, Ziyi Wu, Animesh Garg and Alec Jacobson.
+---
 
-## Installation
+### Project Overview
 
-To install this library, start by cloning this repository 
-```bash
-git clone https://github.com/sgsellan/fracture-modes.git
-```
-Create a [`conda` environment](https://docs.conda.io/projects/conda/en/latest/index.html)\*
-```bash
-conda create -n fracture-modes python=3.9
-conda activate fracture-modes
-```
-> \*_for Apple Silicon (M1/M2) users, the igl, scikit-sparse, and tetgen conda packages are currently not available for arm64. To ensure that you create a x86_64 environment use instead_
-> ```
-> CONDA_SUBDIR=osx-64 conda create -n fracture-modes python=3.9
-> conda activate fracture-modes
-> conda config --env --set subdir osx-64  # make sure that conda commands in this environment use intel packages
-> ```
+This project is focused on optimizing the performance of the "Breaking Good: Fracture Modes for Realtime Destruction" project. As indicated by the author in the original paper, GPU acceleration could enhance its performance. This version incorporates GPU computation, transitioning from CPU-based to GPU-based calculations wherever possible. Below are the details of the GPU-optimized version:
 
-Then, install all dependencies:
-```bash
-python -m pip install -r requirements.txt
-conda install -c conda-forge igl scikit-sparse tetgen
-```
-Finally, obtain a (free if you're academic) mosek licence [here](https://www.mosek.com/products/academic-licenses/), and install it as a python package:
-```bash
-conda install -c mosek mosek
-```
+---
 
-You can validate your installation by running 
-```bash
-python scripts/example.py
-``` 
-which should complete in around 15 seconds and return a verbose wall of text ending with "Example ran successfully!"
+### Current Status of the Project
 
-Once this is done, 
+#### GPU-Optimized or Parallelized Components:
 
-## Use for fracture simulation
+1. **Tetrahedral Mass Matrix Calculation (`massmatrix_tets`):**
+   - Replaced CPU-based `numpy` and `scipy` implementations with `CuPy`.
+   - All computations for tetrahedral mass matrix calculations now execute on the GPU.
 
-You can use this library by adding this repository to your python path and importing `fracture_utility`. The following sample code will load a mesh and compute its fracture modes (see `scripts/example.py`):
+2. **Exploded Tetrahedral Mesh (`explode_mesh`):**
+   - Implemented a GPU-accelerated version to handle vertex and tetrahedral index explosion, adjacency computation, and discontinuity matrix construction.
 
-```python
-import numpy as np
-import igl
-import fracture_utility as fracture
-from gpytoolbox.copyleft import lazy_cage
+3. **Eigenvalue Decomposition Data Transfer:**
+   - While eigenvalue decomposition still runs on the CPU using `scipy.eigsh`, the data generation occurs on the GPU, reducing bottlenecks.
 
-# This is the "fine mesh", i.e. the mesh we use for rendering
-v_fine, f_fine = igl.read_triangle_mesh("data/bunny_oded.obj")
-v_fine = gpytoolbox.normalize_points(v_fine)
-# This is the "cage mesh", i.e. the coarser mesh that we will tetrahedralize and use for the physical simulation
-v, f = lazy_cage(v_fine,f_fine,num_faces=100)
-# Tetrahedralize
-tgen = tetgen.TetGen(v,f)
-nodes, elements =  tgen.tetrahedralize()
-# Initialize fracture mode class
-modes = fracture.fracture_modes(nodes,elements) 
-# Set parameters for call to fracture modes
-params = fracture.fracture_modes_parameters(num_modes=10,verbose=True,d=3)
-# Compute fracture modes
-modes.compute_modes(parameters=params)
-```
+4. **Impact Calculation (`fracture_modes`):**
+   - Utilized the GPU for adjacency-based distance calculations between tetrahedra, matrix operations, and vector computations.
+   
+5. **Parallel Computation of Fracture Modes:**
+   - Adopted `ThreadPoolExecutor` to parallelize mode computation, reducing processing time.
 
-After running this code, the class attribute `modes.modes` will be populated with a `3num_tets` by `10` matrix containing the displacements of each tetrahedron in the mesh (row) for each mode (column).
+---
 
-Any runtime impact can be projected into our computed modes to obtain a realtime fracture with `modes.impact_projection`; for example, 
-```python
-# We need to precompute some stuff that we will only need to do once
-modes.impact_precomputation(v_fine=v_fine,f_fine=f_fine)
-# Optionally, you can use this to save each mode's segmentation in the current directory
-modes.write_segmented_modes("output_modes")
-contact_point = nodes[1,:]
-direction = np.array([1.0,0.0,0.0])
-# First projection, this should be fast
-modes.impact_projection(contact_point=contact_point,direction=direction)
-# Second projection, this should be fast
-new_contact_point = nodes[5,:]
-modes.impact_projection(contact_point=new_contact_point,direction=direction)
-# Write segmented output to obj
-modes.write_segmented_output("output.obj")
-```
+#### CPU-Dependent Components (Limitations for Full GPU Transition):
 
-We also provide a graphical interface that you can use to get a quick idea of how our algorithm works. Open it by running 
-```bash
-python scripts/fracture_gui.py PATH/TO/FINE/MESH.obj
-```
-Your mesh will appear on screen surrounded by a coarse cage. You can tweak the size of the cage if you want using the slider. You can also change the number of modes you want to compute:
+1. **Mode Computation:**
+   - The current algorithm requires iterative dependency on prior mode results (stored in `Us`), which prevents straightforward parallelization. Attempts to fully parallelize (e.g., via multi-threading or multi-processing) led to incorrect object segmentation.
+   - A potential redesign could leverage Gram-Schmidt orthogonalization to generate an orthogonal seed set for parallel mode calculations. However, this would require ensuring orthogonality throughout the computation.
 
-![](assets/screencap1.png)
+2. **Sparse Matrix Decomposition (`sparse_sqrt`):**
+   - Cholesky decomposition of large sparse matrices does not scale well on the GPU due to its complexity (O(n^3)).
+   - Enabled `CHOLMOD_USE_GPU` for partial GPU acceleration but limited by memory size constraints.
 
-You can then press "Compute Modes". The console will show the progress, it shouldn't take more than one minute unless your cage is very fine. Once it is done, a message saying "Modes Computed" will appear. You can then press "Show Modes" to visualize all the possible fractures our modes identified:
+3. **Eigenvalue Decomposition (`eigsh`):**
+   - The `scipy.sparse.linalg.eigsh` function is not GPU-compatible, necessitating CPU execution.
 
-![](assets/screencap2.png)
+4. **Conic Programming Solver (`conic_solve`):**
+   - Relies on the MOSEK solver, which supports only CPU computation.
 
-Then, you can go to "Impact Mode", and click "Generate Random Impact". Three meshes will appear: one will show the norm of the impact as a scalar field on the cage mesh, the middle one will show the impact's projection onto our modes on the cage mesh, and the final mesh will be the fine mesh, segmented to show the pieces it would break on according to our algorithm with that given impact. Timing details will also appear on screen
+5. **Sparse Kronecker Product and Connected Components:**
+   - Operations such as `kron` and `connected_components` are not supported on GPUs and rely on `scipy`.
 
-![](assets/screencap3.png)
+6. **Mesh Boolean Operations and Post-Processing:**
+   - Complex mesh operations like `cotmatrix` and `remove_unreferenced` from `igl` are CPU-bound.
 
-Optionally, you can now press on "Save segmented output" to write the fine output to an `.obj` file. See `assets/sample_use.mp4` for a full recorded GUI example.
+---
 
-<!----><a name="dataset"></a>
-## Use for fracture dataset generation
+#### If you compile the original version of the project provided by the author, you might find that its model processing speed is similar to mine. This is because GPU acceleration has not become the computational bottleneck here. In this scenario, all tasks transferred to the GPU are not granular enough, and their computation speeds are very fast, making the CPU-bound calculations, which cannot be replaced by the GPU, the main factor slowing down progress. To achieve significant acceleration, it is necessary to avoid these CPU-only libraries from the design phase and build an architecture that supports parallelization.
 
-As shown in our paper ["Breaking Bad: A Dataset for Geometric Fracture and Reassembly"](https://breaking-bad-dataset.github.io), our code can also be used to simulate many fractures for a specific object. The documented funcionality necessary to replicate our dataset generation can be found inside the `fracture_utility/generate_fractures.py` function. An example use can be found in the `scripts/example_dataset_generation.py` script:
+---
 
-```python
-# Load dependencies
-import fracture_utility as fracture
-import sys
-import os
-# Read input mesh
-filename = "data/bunny_oded.obj"
-if len(sys.argv)>1:
-    filename = sys.argv[1]
+### How to Build
+1. First, ensure that you have completed the configuration requirements of the "Breaking Good: Fracture Modes for Realtime Destruction" project. I have replaced the provided `requirements.txt` with a version where some library versions are corrected.
 
-# Choose output directory
-output_dir = os.path.splitext(os.path.basename(filename))[0]
+2. Ensure that your computer has the correct version of CUDA installed.
 
-# Call dataset generation without volume constraint and with a 5000 cage size.
-fracture.generate_fractures(filename,output_dir=output_dir,verbose=True,compressed=False,cage_size=5000,volume_constraint=0.00)
-```
+3. I have included the file `manyfaces.obj` in this project. If you wish to use your own model, you can rename it to `manyfaces.obj`.
 
+4. My optimization is entirely based on the provided GUI, meaning I have not attempted to use this project as a library in other projects. The command-line execution method is `python scripts/fracture_gui.py manyfaces.obj`. If you want to change the model, you can replace `manyfaces` with your file name. Before running this command, you can enable CHOLMOD GPU acceleration by setting `$env:CHOLMOD_USE_GPU = "1"`. These options can also be configured in your IDE's project debugging settings.
 
-## Known Issues
-
-Please do not hesitate to [contact me](sgsellan@cs.toronto.edu) if you find any issues or bugs in this code, or you struggle to run it in any way.
-
-## Licensing
-
-This code is released free for academic, non-commercial, non-military use. Contact [the authors](mailto:sgsellan@cs.toronto.edu) for commercial usage licensing.
+5. Although not recommended, you can try selecting excessively high `faces in cage` values. In some cases, such as the current kevlar board model, which has a relatively simple shape, the interpolation method of `lazy_cage` might cause a face explosion. This could result in the input face count increasing slightly, leading to tenfold or even hundredfold processing face counts, potentially causing memory overflow. For the current object, I recommend you set this parameter to a number smaller than 8000.
